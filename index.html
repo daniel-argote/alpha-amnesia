@@ -72,6 +72,18 @@
                     </div>
                     <input type="range" id="zoom" min="50" max="400" value="100" class="w-full cursor-pointer">
                 </div>
+
+                <!-- Crop Tool -->
+                <div class="border-t border-slate-800 pt-4">
+                    <div class="flex justify-between items-center mb-2">
+                        <label class="font-semibold text-slate-300 text-sm">Crop Tool</label>
+                        <button id="toggleCropBtn" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1 rounded text-emerald-400 border border-slate-700 transition-colors">Enable</button>
+                    </div>
+                    <div id="cropControls" class="hidden space-y-2">
+                        <p class="text-[10px] text-slate-500 uppercase tracking-wide">Drag handles to crop</p>
+                        <button id="applyCropBtn" class="w-full py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 hover:text-white rounded-lg text-xs font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed" disabled>APPLY CROP</button>
+                    </div>
+                </div>
             </section>
 
             <section class="pt-6 border-t border-slate-800 space-y-3">
@@ -97,6 +109,9 @@
 
         <!-- Main Workspace -->
         <div class="flex-1 relative flex items-center justify-center bg-slate-950 overflow-hidden">
+            <div id="image-dimensions" class="absolute top-6 px-4 py-2 bg-slate-900/90 backdrop-blur border border-slate-700 rounded-full text-slate-300 font-mono text-sm shadow-xl z-20 hidden pointer-events-none">
+                0 x 0 px
+            </div>
             <div id="drop-zone" class="absolute inset-0 z-10 flex flex-col items-center justify-center border-4 border-dashed border-slate-800 m-12 rounded-3xl transition-all">
                 <div class="p-6 bg-slate-900 rounded-full mb-4">
                     <svg class="text-emerald-500" xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path><polyline points="14 2 14 8 20 8"></polyline><circle cx="10" cy="13" r="2"></circle><path d="m20 17-1.09-1.09a2 2 0 0 0-2.82 0L10 22"></path></svg>
@@ -116,6 +131,7 @@
     <script>
         const dropZone = document.getElementById('drop-zone');
         const canvasWrapper = document.getElementById('canvas-wrapper');
+        const imageDimensions = document.getElementById('image-dimensions');
         const fileInput = document.getElementById('fileInput');
         const canvas = document.getElementById('mainCanvas');
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -133,6 +149,9 @@
         const resetBtn = document.getElementById('resetBtn');
         const askFileName = document.getElementById('askFileName');
         const statusText = document.getElementById('status-text');
+        const toggleCropBtn = document.getElementById('toggleCropBtn');
+        const cropControls = document.getElementById('cropControls');
+        const applyCropBtn = document.getElementById('applyCropBtn');
 
         let originalImage = null;
 
@@ -164,6 +183,7 @@
                     originalImage = img;
                     dropZone.classList.add('hidden');
                     canvasWrapper.classList.remove('hidden');
+                    imageDimensions.classList.remove('hidden');
                     downloadBtn.disabled = false;
                     downloadSvgBtn.disabled = false;
                     statusText.innerText = `Sprite: ${file.name || "Pasted Image"}`;
@@ -174,19 +194,147 @@
             reader.readAsDataURL(file);
         }
 
-        // --- Sampling ---
+        // --- Crop & Sampling Logic ---
+        let isCropping = false;
+        let dragHandle = null; // null, 'nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w', 'move'
+        let dragStart = { x: 0, y: 0 };
+        let rectStart = { x: 0, y: 0, w: 0, h: 0 };
+        let cropRect = null; // { x, y, w, h }
+
+        toggleCropBtn.addEventListener('click', () => {
+            isCropping = !isCropping;
+            if (isCropping) {
+                toggleCropBtn.innerText = "Disable";
+                toggleCropBtn.classList.replace('text-emerald-400', 'text-red-400');
+                cropControls.classList.remove('hidden');
+                if (originalImage) {
+                    // Initialize to full image
+                    cropRect = { x: 0, y: 0, w: canvas.width, h: canvas.height };
+                    applyCropBtn.disabled = false;
+                    processImage();
+                }
+            } else {
+                toggleCropBtn.innerText = "Enable";
+                toggleCropBtn.classList.replace('text-red-400', 'text-emerald-400');
+                cropControls.classList.add('hidden');
+                cropRect = null;
+                canvas.style.cursor = 'crosshair';
+                processImage();
+            }
+        });
+
+        function getHandle(x, y, rect, zoom) {
+            if (!rect) return null;
+            const handleRadius = 10 / zoom; 
+            
+            // Corners
+            if (Math.abs(x - rect.x) <= handleRadius && Math.abs(y - rect.y) <= handleRadius) return 'nw';
+            if (Math.abs(x - (rect.x + rect.w)) <= handleRadius && Math.abs(y - rect.y) <= handleRadius) return 'ne';
+            if (Math.abs(x - (rect.x + rect.w)) <= handleRadius && Math.abs(y - (rect.y + rect.h)) <= handleRadius) return 'se';
+            if (Math.abs(x - rect.x) <= handleRadius && Math.abs(y - (rect.y + rect.h)) <= handleRadius) return 'sw';
+
+            // Edges
+            if (Math.abs(y - rect.y) <= handleRadius && x >= rect.x && x <= rect.x + rect.w) return 'n';
+            if (Math.abs(y - (rect.y + rect.h)) <= handleRadius && x >= rect.x && x <= rect.x + rect.w) return 's';
+            if (Math.abs(x - rect.x) <= handleRadius && y >= rect.y && y <= rect.y + rect.h) return 'w';
+            if (Math.abs(x - (rect.x + rect.w)) <= handleRadius && y >= rect.y && y <= rect.y + rect.h) return 'e';
+
+            // Inside
+            if (x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h) return 'move';
+            return null;
+        }
+
         canvas.addEventListener('mousedown', (e) => {
             if (!originalImage) return;
             const rect = canvas.getBoundingClientRect();
             const x = (e.clientX - rect.left) * (canvas.width / rect.width);
             const y = (e.clientY - rect.top) * (canvas.height / rect.height);
+            const zoom = parseInt(zoomInput.value) / 100;
             
-            // Temporary draw of original to get true color
-            ctx.drawImage(originalImage, 0, 0);
-            const p = ctx.getImageData(x, y, 1, 1).data;
-            const hex = "#" + [p[0], p[1], p[2]].map(x => x.toString(16).padStart(2, '0')).join('');
-            targetColorInput.value = hex;
-            processImage();
+            if (isCropping) {
+                const handle = getHandle(x, y, cropRect, zoom);
+                if (handle) {
+                    dragHandle = handle;
+                    dragStart = { x, y };
+                    rectStart = { ...cropRect };
+                }
+            } else {
+                // Temporary draw of original to get true color
+                ctx.drawImage(originalImage, 0, 0);
+                const p = ctx.getImageData(x, y, 1, 1).data;
+                const hex = "#" + [p[0], p[1], p[2]].map(x => x.toString(16).padStart(2, '0')).join('');
+                targetColorInput.value = hex;
+                processImage();
+            }
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!originalImage) return;
+            const rect = canvas.getBoundingClientRect();
+            const x = (e.clientX - rect.left) * (canvas.width / rect.width);
+            const y = (e.clientY - rect.top) * (canvas.height / rect.height);
+            const zoom = parseInt(zoomInput.value) / 100;
+
+            if (isCropping) {
+                if (dragHandle) {
+                    const dx = x - dragStart.x;
+                    const dy = y - dragStart.y;
+                    let newRect = { ...rectStart };
+
+                    if (dragHandle === 'move') {
+                        newRect.x += dx;
+                        newRect.y += dy;
+                        // Constrain
+                        newRect.x = Math.max(0, Math.min(canvas.width - newRect.w, newRect.x));
+                        newRect.y = Math.max(0, Math.min(canvas.height - newRect.h, newRect.y));
+                    } else {
+                        if (dragHandle.includes('w')) { newRect.x += dx; newRect.w -= dx; }
+                        if (dragHandle.includes('e')) { newRect.w += dx; }
+                        if (dragHandle.includes('n')) { newRect.y += dy; newRect.h -= dy; }
+                        if (dragHandle.includes('s')) { newRect.h += dy; }
+                        
+                        // Prevent inversion
+                        if (newRect.w < 1) newRect.w = 1;
+                        if (newRect.h < 1) newRect.h = 1;
+                    }
+                    cropRect = newRect;
+                    processImage();
+                } else {
+                    // Update Cursor
+                    const handle = getHandle(x, y, cropRect, zoom);
+                    if (handle === 'move') canvas.style.cursor = 'move';
+                    else if (handle === 'nw' || handle === 'se') canvas.style.cursor = 'nwse-resize';
+                    else if (handle === 'ne' || handle === 'sw') canvas.style.cursor = 'nesw-resize';
+                    else if (handle === 'n' || handle === 's') canvas.style.cursor = 'ns-resize';
+                    else if (handle === 'e' || handle === 'w') canvas.style.cursor = 'ew-resize';
+                    else canvas.style.cursor = 'default';
+                }
+            }
+        });
+
+        window.addEventListener('mouseup', () => {
+            dragHandle = null;
+            if (isCropping && cropRect) applyCropBtn.disabled = false;
+        });
+
+        applyCropBtn.addEventListener('click', () => {
+            if (!cropRect || cropRect.w === 0 || cropRect.h === 0) return;
+
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = cropRect.w;
+            tempCanvas.height = cropRect.h;
+            const tCtx = tempCanvas.getContext('2d');
+            tCtx.drawImage(originalImage, cropRect.x, cropRect.y, cropRect.w, cropRect.h, 0, 0, cropRect.w, cropRect.h);
+            
+            const newImg = new Image();
+            newImg.onload = () => {
+                originalImage = newImg;
+                // Reset Crop UI
+                toggleCropBtn.click(); // Toggle off
+                applyCropBtn.disabled = true;
+                processImage();
+            };
+            newImg.src = tempCanvas.toDataURL();
         });
 
         // --- Image Processing ---
@@ -235,6 +383,43 @@
                 }
             }
             ctx.putImageData(imgData, 0, 0);
+
+            // Draw Crop Overlay
+            if (isCropping && cropRect) {
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+                ctx.fillRect(0, 0, w, cropRect.y); // Top
+                ctx.fillRect(0, cropRect.y + cropRect.h, w, h - (cropRect.y + cropRect.h)); // Bottom
+                ctx.fillRect(0, cropRect.y, cropRect.x, cropRect.h); // Left
+                ctx.fillRect(cropRect.x + cropRect.w, cropRect.y, w - (cropRect.x + cropRect.w), cropRect.h); // Right
+
+                ctx.strokeStyle = '#10b981';
+                ctx.lineWidth = 2 / zoom; // Keep line width consistent regardless of zoom
+                ctx.setLineDash([5 / zoom, 5 / zoom]);
+                ctx.strokeRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
+                ctx.setLineDash([]);
+
+                // Draw Handles
+                const handleSize = 6 / zoom;
+                ctx.fillStyle = '#10b981';
+                const drawHandle = (hx, hy) => ctx.fillRect(hx - handleSize/2, hy - handleSize/2, handleSize, handleSize);
+
+                // Corners
+                drawHandle(cropRect.x, cropRect.y);
+                drawHandle(cropRect.x + cropRect.w, cropRect.y);
+                drawHandle(cropRect.x, cropRect.y + cropRect.h);
+                drawHandle(cropRect.x + cropRect.w, cropRect.y + cropRect.h);
+                // Edges
+                drawHandle(cropRect.x + cropRect.w/2, cropRect.y);
+                drawHandle(cropRect.x + cropRect.w/2, cropRect.y + cropRect.h);
+                drawHandle(cropRect.x, cropRect.y + cropRect.h/2);
+                drawHandle(cropRect.x + cropRect.w, cropRect.y + cropRect.h/2);
+                
+                // Update dimensions display for crop
+                imageDimensions.innerText = `${Math.round(cropRect.w)} x ${Math.round(cropRect.h)} px`;
+            } else {
+                // Update dimensions display for full image
+                imageDimensions.innerText = `${w} x ${h} px`;
+            }
         }
 
         [toleranceInput, smoothnessInput, zoomInput, targetColorInput].forEach(el => {
@@ -317,6 +502,7 @@
             originalImage = null;
             dropZone.classList.remove('hidden');
             canvasWrapper.classList.add('hidden');
+            imageDimensions.classList.add('hidden');
             downloadBtn.disabled = true;
             downloadSvgBtn.disabled = true;
             statusText.innerText = "Ready for any sprite...";
