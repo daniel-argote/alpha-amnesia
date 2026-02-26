@@ -19,7 +19,7 @@ A versatile, client-side image utility for sprite and asset preparation. This to
 ## Live Demo
 
 Access the tool directly via GitHub Pages:  
-**Launch Alpha Amnesia v2.1**
+**[Launch Alpha Amnesia v2.1](https://daniel-argote.github.io/alpha-amnesia/)**
 
 ## Project Structure
 
